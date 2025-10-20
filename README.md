@@ -24,3 +24,27 @@ RUN java -version
 WORKDIR /app
 COPY . .
 RUN mvn clean package
+
+
+FROM my-artifactory/maven:3.9.9-amazoncorretto-11
+
+# Create non-root user
+ARG POD_USER=producer
+RUN useradd -m -u 1000 ${POD_USER}
+
+# Set working directory (still as root)
+WORKDIR /home/${POD_USER}
+
+# Copy project files
+COPY pom.xml .
+COPY src ./src
+COPY settings.xml /usr/share/maven/conf/settings.xml
+
+# Fix ownership (important!)
+RUN chown -R ${POD_USER}:${POD_USER} /home/${POD_USER}
+
+# Switch to non-root user
+USER ${POD_USER}
+
+# Build with Maven using your internal Artifactory
+RUN mvn -s /usr/share/maven/conf/settings.xml -f pom.xml clean package
