@@ -137,3 +137,6 @@ RUN mvn -B help:evaluate -Dexpression=os.detected.classifier -q -DforceStdout
 
 # Now safely go offline
 RUN mvn -B dependency:go-offline
+
+**docker ps -a -q --filter ancestor=my-flink-jvm:latest | xargs -r docker rm -f && docker rmi -f my-flink-jvm:latest
+
