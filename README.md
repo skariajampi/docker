@@ -130,3 +130,10 @@ This way, all existing SSL/truststore settings remain intact.
 You can test Java SSL directly before Maven:
 echo | openssl s_client -connect artifactory.mycompany.com:443
 If that works but mvn clean package still fails, it’s definitely Java truststore.
+
+
+# Force Maven to detect OS properties before going offline
+RUN mvn -B help:evaluate -Dexpression=os.detected.classifier -q -DforceStdout
+
+# Now safely go offline
+RUN mvn -B dependency:go-offline
