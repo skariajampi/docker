@@ -1,0 +1,437 @@
+e2e-api
+-------
+e2e-project/
+├── pom.xml                      # Parent pom
+├── e2e-tests/                   # Your existing tests
+│   ├── pom.xml
+│   ├── src/main/java/...
+│   └── src/test/java/...
+└── e2e-api/                     # New Spring Boot wrapper
+    ├── pom.xml
+    └── src/main/java/com/mycompany/e2eapi/
+        ├── MavenTestController.java
+        └── TestExecutorService.java
+
+----------
+parent pom:
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.mycompany</groupId>
+    <artifactId>e2e-project</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>e2e-tests</module>
+        <module>e2e-api</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring.boot.version>3.3.1</spring.boot.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
+
+----------------------------------
+
+existing e2e pom:
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.mycompany</groupId>
+        <artifactId>e2e-project</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+        <!-- JUnit 5 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spock for Groovy tests -->
+        <dependency>
+            <groupId>org.spockframework</groupId>
+            <artifactId>spock-core</artifactId>
+            <version>2.3-M2-groovy-4.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Groovy dependency -->
+        <dependency>
+            <groupId>org.codehaus.groovy</groupId>
+            <artifactId>groovy</artifactId>
+            <version>4.1.11</version>
+        </dependency>
+
+        <!-- Optional AWS SDK (if used in tests) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+            <version>2.23.0</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>opensearch</artifactId>
+            <version>2.23.0</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Spec.groovy</include>
+                    </includes>
+                    <useModulePath>false</useModulePath>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+-----------------------------------------------
+
+e2e-api pom:
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.mycompany</groupId>
+        <artifactId>e2e-project</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>e2e-api</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+        <!-- Spring Boot Web -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Lombok for convenience -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- JSON parsing -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot Maven Plugin -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+----------------------------------------------
+
+package com.mycompany.e2eapi;
+
+import org.springframework.web.bind.annotation.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@RestController
+@RequestMapping("/api/tests")
+public class MavenTestController {
+
+    private final TestExecutorService executorService;
+
+    public MavenTestController(TestExecutorService executorService) {
+        this.executorService = executorService;
+    }
+
+    @PostMapping("/run")
+    public TestRunResponse runTests(@RequestBody TestRunRequest request) {
+        String jobId = executorService.startTest(request);
+        return new TestRunResponse(jobId, "started");
+    }
+
+    @GetMapping("/status/{jobId}")
+    public TestRunResponse getStatus(@PathVariable String jobId) {
+        return executorService.getStatus(jobId);
+    }
+
+    @GetMapping("/results/{jobId}")
+    public String getResults(@PathVariable String jobId) {
+        return executorService.getLogs(jobId);
+    }
+}
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+class TestRunRequest {
+    private String testClass;         // e.g., com.mycompany.MyTest
+    private String testMethod;        // optional: MyTest#myMethod
+    private String[] additionalArgs;  // optional: e.g., -Denv=staging
+}
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+class TestRunResponse {
+    private String jobId;
+    private String status;
+}
+----------------------------------------------------
+
+package com.mycompany.e2eapi;
+
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.*;
+
+@Service
+public class TestExecutorService {
+
+    private final Map<String, TestRunResponse> statusMap = new ConcurrentHashMap<>();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+
+    public String startTest(TestRunRequest req) {
+        String jobId = UUID.randomUUID().toString();
+        statusMap.put(jobId, new TestRunResponse(jobId, "running"));
+
+        executor.submit(() -> runMaven(jobId, req));
+        return jobId;
+    }
+
+    private void runMaven(String jobId, TestRunRequest req) {
+        String logFile = "/tmp/e2e-" + jobId + ".log";
+
+        List<String> command = new ArrayList<>(Arrays.asList("mvn", "clean", "test"));
+
+        if (req.getTestClass() != null) {
+            String testArg = req.getTestClass();
+            if (req.getTestMethod() != null) {
+                testArg += "#" + req.getTestMethod();
+            }
+            command.add("-Dtest=" + testArg);
+        }
+
+        if (req.getAdditionalArgs() != null) {
+            command.addAll(Arrays.asList(req.getAdditionalArgs()));
+        }
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(new File("../e2e-tests")); // path to e2e-tests module
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(ProcessBuilder.Redirect.to(new File(logFile)));
+
+        try {
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+            String status = (exitCode == 0) ? "success" : "failed";
+            statusMap.put(jobId, new TestRunResponse(jobId, status));
+        } catch (Exception e) {
+            statusMap.put(jobId, new TestRunResponse(jobId, "error: " + e.getMessage()));
+        }
+    }
+
+    public TestRunResponse getStatus(String jobId) {
+        return statusMap.getOrDefault(jobId, new TestRunResponse(jobId, "unknown"));
+    }
+
+    public String getLogs(String jobId) {
+        try {
+            return Files.readString(Path.of("/tmp/e2e-" + jobId + ".log"));
+        } catch (IOException e) {
+            return "No logs found for job: " + jobId;
+        }
+    }
+}
+
+
+-------------------------------------
+FROM maven:3.9.6-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY . .
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/e2e-api/target/e2e-api-1.0.0.jar ./e2e-api.jar
+COPY --from=build /app/e2e-tests ./e2e-tests
+CMD ["java", "-jar", "e2e-api.jar"]
+
+This preserves your existing e2e-tests directory.
+The API wrapper runs in the same container.
+Maven can still execute tests in ../e2e-tests.
+
+Supports full test suite or specific test class/methods.
+Logs are stored under /tmp/e2e-<jobId>.log and returned by API.
+Can scale horizontally in EKS — each pod can run independent test jobs.
+Security: secure the API with token or GitLab OIDC if exposed externally.
+Optionally: upload logs to S3 for persistent storage.
+This setup gives you a ready-to-run “E2E as API” solution while keeping all your existing Maven/Groovy/Java tests intact.
+
+------------------------------------------------------------
+
+gitlab-ci:
+
+stages:
+  - test
+
+variables:
+  E2E_API_URL: "https://e2e-api.mycompany.com/api/tests"
+
+e2e_tests:
+  stage: test
+  image: curlimages/curl:latest
+  script:
+    # 1. Trigger the E2E test run
+    - echo "Starting E2E test..."
+    - >
+      JOB_ID=$(curl -s -X POST "$E2E_API_URL/run" 
+      -H "Content-Type: application/json" 
+      -d '{"testClass":"com.mycompany.MySetupTest","testMethod":"init"}' 
+      | jq -r .jobId)
+    - echo "E2E Job ID: $JOB_ID"
+
+    # 2. Poll for test status until it completes
+    - >
+      for i in {1..30}; do
+        STATUS=$(curl -s "$E2E_API_URL/status/$JOB_ID" | jq -r .status)
+        echo "E2E Status: $STATUS"
+        if [ "$STATUS" = "success" ] || [ "$STATUS" = "failed" ]; then break; fi
+        sleep 20
+      done
+
+    # 3. Fetch test logs
+    - echo "Fetching test logs..."
+    - curl -s "$E2E_API_URL/results/$JOB_ID" -o e2e.log
+
+    # 4. Show last 50 lines in pipeline output
+    - tail -n 50 e2e.log
+
+  artifacts:
+    paths:
+      - e2e.log
+    expire_in: 1 week
+--------------------------------
+
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import java.nio.file.Path;
+
+public class S3Uploader {
+
+    private final S3Client s3;
+
+    public S3Uploader() {
+        this.s3 = S3Client.builder()
+                .region(Region.US_EAST_1) // set your region
+                .credentialsProvider(DefaultCredentialsProvider.create())
+                .build();
+    }
+
+    public String uploadFile(String bucketName, String key, Path filePath) {
+        PutObjectRequest request = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(key)
+                .build();
+        s3.putObject(request, filePath);
+        // Optionally generate a pre-signed URL for public access
+        return "s3://" + bucketName + "/" + key;
+    }
+}
+
+-----------------------
+
+String logFile = "/tmp/e2e-" + jobId + ".log";
+// existing Maven process runs here...
+
+// Upload logs
+S3Uploader uploader = new S3Uploader();
+String s3Key = "e2e-results/" + jobId + "/maven.log";
+String s3Url = uploader.uploadFile("my-e2e-bucket", s3Key, Path.of(logFile));
+
+// Optionally store URL in job status map
+statusMap.put(jobId, new TestRunResponse(jobId, status, s3Url));
+
+-------------------------------
+@Data
+@AllArgsConstructor
+class TestRunResponse {
+    private String jobId;
+    private String status;
+    private String s3Url; // optional
+}
+
+-----------------------------
+Path reportsDir = Paths.get("../e2e-tests/target/surefire-reports");
+Files.list(reportsDir).forEach(file -> {
+    String key = "e2e-results/" + jobId + "/reports/" + file.getFileName();
+    uploader.uploadFile("my-e2e-bucket", key, file);
+});
+
+
+---------------------
+
+If you want GitLab or other teams to access results::
+
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import java.time.Duration;
+
+S3Presigner presigner = S3Presigner.create();
+GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+        .getObjectRequest(b -> b.bucket("my-e2e-bucket").key("e2e-results/" + jobId + "/maven.log"))
+        .signatureDuration(Duration.ofHours(24))
+        .build();
+
+URL presignedUrl = presigner.presignGetObject(presignRequest).url();
+
