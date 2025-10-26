@@ -1,0 +1,647 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.yourcompany</groupId>
+    <artifactId>test-framework</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.7.0</version>
+        <relativePath/>
+    </parent>
+    
+    <properties>
+        <java.version>17</java.version>
+        <groovy.version>3.0.9</groovy.version>
+        <spock.version>2.1-groovy-3.0</spock.version>
+        <kubernetes-client.version>16.0.0</kubernetes-client.version>
+        <maven-surefire-plugin.version>3.0.0-M7</maven-surefire-plugin.version>
+    </properties>
+    
+    <dependencies>
+        <!-- Spring Boot Starters -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        
+        <!-- Groovy & Spock -->
+        <dependency>
+            <groupId>org.codehaus.groovy</groupId>
+            <artifactId>groovy</artifactId>
+            <version>${groovy.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.spockframework</groupId>
+            <artifactId>spock-core</artifactId>
+            <version>${spock.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.spockframework</groupId>
+            <artifactId>spock-spring</artifactId>
+            <version>${spock.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Spring Boot Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Kubernetes Client -->
+        <dependency>
+            <groupId>io.kubernetes</groupId>
+            <artifactId>client-java</artifactId>
+            <version>${kubernetes-client.version}</version>
+        </dependency>
+        
+        <!-- Modern Java HTTP Client -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            
+            <plugin>
+                <groupId>org.codehaus.gmavenplus</groupId>
+                <artifactId>gmavenplus-plugin</artifactId>
+                <version>1.13.1</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                            <goal>testCompile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+---------------------------------
+
+package com.yourcompany.testframework.service;
+
+import com.yourcompany.testframework.model.TestExecution;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.nio.file.*;
+import java.time.Instant;
+import java.time.Duration;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+
+@Service
+public class AsyncTestService {
+    
+    private static final Logger logger = LoggerFactory.getLogger(AsyncTestService.class);
+    
+    @Value("${test.workspace:/workspace}")
+    private String workspace;
+    
+    @Value("${test.results-dir:target/surefire-reports}")
+    private String resultsDir;
+    
+    @Value("${test.execution.timeout.hours:2}")
+    private long executionTimeoutHours;
+    
+    private final ConcurrentHashMap<String, TestExecution> executions = new ConcurrentHashMap<>();
+    private final Executor taskExecutor;
+    
+    public AsyncTestService(@Qualifier("testTaskExecutor") Executor taskExecutor) {
+        this.taskExecutor = taskExecutor;
+    }
+    
+    @Async("testTaskExecutor")
+    public CompletableFuture<TestExecution> executeTestAsync(String testClass, String executionId,
+                                                           String additionalParams, String testType) {
+        TestExecution execution = new TestExecution(executionId, testClass);
+        execution.setStatus("RUNNING");
+        execution.setTestType(testType);
+        execution.setStartTime(Instant.now());
+        executions.put(executionId, execution);
+        
+        return CompletableFuture
+            .supplyAsync(() -> executeTestProcess(execution, additionalParams), taskExecutor)
+            .orTimeout(executionTimeoutHours, TimeUnit.HOURS)
+            .exceptionally(throwable -> handleExecutionException(execution, throwable));
+    }
+    
+    private TestExecution executeTestProcess(TestExecution execution, String additionalParams) {
+        Path outputFile = null;
+        Path errorFile = null;
+        
+        try {
+            String testClass = execution.getTestClass();
+            String executionId = execution.getExecutionId();
+            
+            logger.info("Starting test execution: {} for test: {}", executionId, testClass);
+            
+            String mavenCommand = buildMavenCommand(testClass, additionalParams, execution.getTestType());
+            execution.setMavenCommand(mavenCommand);
+            logger.info("Maven command for {}: {}", executionId, mavenCommand);
+            
+            // Create temp files for output (using Java 17 Files.createTempFile with prefix)
+            outputFile = Files.createTempFile("test-output-%s".formatted(executionId), ".log");
+            errorFile = Files.createTempFile("test-error-%s".formatted(executionId), ".log");
+            
+            ProcessBuilder processBuilder = new ProcessBuilder("sh", "-c", mavenCommand);
+            processBuilder.directory(new File(workspace));
+            
+            // Redirect output to files - most reliable approach
+            processBuilder.redirectOutput(outputFile.toFile());
+            processBuilder.redirectError(errorFile.toFile());
+            
+            Process process = processBuilder.start();
+            
+            // Use CompletableFuture for process completion with timeout
+            CompletableFuture<Process> processFuture = process.onExit();
+            
+            // Wait for process completion
+            Process completedProcess = processFuture.get(executionTimeoutHours, TimeUnit.HOURS);
+            
+            int exitCode = completedProcess.exitValue();
+            execution.setExitCode(exitCode);
+            
+            // Read output from files using Java 17 Files.readString
+            String output = Files.readString(outputFile);
+            String error = Files.readString(errorFile);
+            
+            execution.setOutput(output);
+            execution.setError(error);
+            execution.setStatus(exitCode == 0 ? "COMPLETED" : "FAILED");
+            execution.setEndTime(Instant.now());
+            
+            // Find and set results path
+            findTestResultsPath(testClass).ifPresent(execution::setResultsPath);
+            
+            logger.info("Test execution {} completed with status: {} in {} ms", 
+                       executionId, execution.getStatus(), execution.getDuration());
+            
+            return execution;
+            
+        } catch (TimeoutException e) {
+            logger.error("Test execution {} timed out after {} hours", 
+                        execution.getExecutionId(), executionTimeoutHours);
+            execution.setStatus("TIMEOUT");
+            execution.setError("Test execution timed out after " + executionTimeoutHours + " hours");
+            execution.setEndTime(Instant.now());
+            return execution;
+            
+        } catch (Exception e) {
+            logger.error("Error during test execution: {}", execution.getExecutionId(), e);
+            execution.setStatus("ERROR");
+            execution.setError("Execution error: " + e.getMessage());
+            execution.setEndTime(Instant.now());
+            return execution;
+            
+        } finally {
+            // Cleanup temp files using Java 17 pattern matching
+            cleanupTempFiles(outputFile, errorFile);
+        }
+    }
+    
+    private TestExecution handleExecutionException(TestExecution execution, Throwable throwable) {
+        logger.error("Execution failed for {}: {}", execution.getExecutionId(), throwable.getMessage());
+        
+        execution.setStatus("ERROR");
+        execution.setError(extractErrorMessage(throwable));
+        execution.setEndTime(Instant.now());
+        
+        executions.put(execution.getExecutionId(), execution);
+        return execution;
+    }
+    
+    private String extractErrorMessage(Throwable throwable) {
+        if (throwable instanceof TimeoutException) {
+            return "Test execution timed out after " + executionTimeoutHours + " hours";
+        } else if (throwable instanceof CompletionException && throwable.getCause() != null) {
+            return throwable.getCause().getMessage();
+        } else {
+            return throwable.getMessage();
+        }
+    }
+    
+    private String buildMavenCommand(String testPattern, String additionalParams, String testType) {
+        var command = new StringBuilder();
+        command.append("mvn clean test ");
+        
+        // Modern switch expression (Java 14+)
+        String testOption = switch (testPattern) {
+            case String s when s.endsWith("Spec") -> "-Dtest=\"**/%s.groovy\"".formatted(testPattern);
+            case String s when s.endsWith("Test") -> "-Dtest=%s".formatted(testPattern);
+            case String s when s.contains("*") -> "-Dtest=\"%s\"".formatted(testPattern);
+            default -> "-Dtest=\"**/%s*\"".formatted(testPattern);
+        };
+        command.append(testOption).append(" ");
+        
+        command.append("-Dmaven.repo.local=/tmp/.m2 ");
+        command.append("--no-transfer-progress ");
+        
+        // Enhanced test type configuration
+        if (testType != null) {
+            String profileSwitch = switch (testType.toLowerCase()) {
+                case "unit" -> "-Dtest.profile=unit -Dtest.timeout=300";
+                case "integration" -> "-Dtest.profile=integration -Dtest.timeout=1800";
+                case "e2e" -> "-Dtest.profile=e2e -Dtest.timeout=3600";
+                default -> "-Dtest.profile=default";
+            };
+            command.append(profileSwitch).append(" ");
+        }
+        
+        // Additional parameters with null-safe check
+        if (additionalParams != null && !additionalParams.isBlank()) {
+            command.append(additionalParams).append(" ");
+        }
+        
+        return command.toString().trim();
+    }
+    
+    private Optional<String> findTestResultsPath(String testPattern) {
+        Path resultsDirPath = Paths.get(workspace, resultsDir);
+        
+        if (!Files.exists(resultsDirPath)) {
+            return Optional.empty();
+        }
+        
+        try (var paths = Files.list(resultsDirPath)) {
+            return paths
+                .filter(path -> path.toString().endsWith(".xml"))
+                .filter(path -> {
+                    String fileName = path.getFileName().toString();
+                    return fileName.contains(testPattern) ||
+                           fileName.contains(testPattern.replace("Spec", "")) ||
+                           fileName.contains(testPattern.replace("Test", ""));
+                })
+                .findFirst()
+                .map(Path::toString);
+                
+        } catch (IOException e) {
+            logger.warn("Error searching for test results for: {}", testPattern, e);
+            return Optional.empty();
+        }
+    }
+    
+    private void cleanupTempFiles(Path... files) {
+        for (Path file : files) {
+            if (file != null) {
+                try {
+                    Files.deleteIfExists(file);
+                } catch (IOException e) {
+                    logger.debug("Failed to delete temp file: {}", file, e);
+                }
+            }
+        }
+    }
+    
+    // Enhanced status methods with Java 17 features
+    public Optional<TestExecution> getExecutionStatus(String executionId) {
+        return Optional.ofNullable(executions.get(executionId));
+    }
+    
+    public boolean isExecutionComplete(String executionId) {
+        return getExecutionStatus(executionId)
+            .map(TestExecution::isCompleted)
+            .orElse(false);
+    }
+    
+    public Duration getExecutionDuration(String executionId) {
+        return getExecutionStatus(executionId)
+            .map(exec -> {
+                if (exec.getStartTime() != null && exec.getEndTime() != null) {
+                    return Duration.between(exec.getStartTime(), exec.getEndTime());
+                } else if (exec.getStartTime() != null) {
+                    return Duration.between(exec.getStartTime(), Instant.now());
+                }
+                return Duration.ZERO;
+            })
+            .orElse(Duration.ZERO);
+    }
+    
+    public void cleanupExecution(String executionId) {
+        TestExecution removed = executions.remove(executionId);
+        if (removed != null) {
+            logger.info("Cleaned up execution: {}", executionId);
+        }
+    }
+    
+    // Modern stream processing for active executions
+    public List<TestExecution> getRunningExecutions() {
+        return executions.values().stream()
+            .filter(exec -> !exec.isCompleted())
+            .toList(); // Java 16+ toList()
+    }
+    
+    public List<TestExecution> getRecentCompletedExecutions(Duration withinDuration) {
+        Instant cutoff = Instant.now().minus(withinDuration);
+        return executions.values().stream()
+            .filter(TestExecution::isCompleted)
+            .filter(exec -> exec.getEndTime() != null && exec.getEndTime().isAfter(cutoff))
+            .toList();
+    }
+    
+    public Map<String, Long> getExecutionStats() {
+        var stats = new ConcurrentHashMap<String, Long>();
+        
+        executions.values().stream()
+            .collect(Collectors.groupingBy(
+                TestExecution::getStatus,
+                Collectors.counting()
+            ))
+            .forEach(stats::put);
+        
+        return stats;
+    }
+}
+
+----------------------------------------------------
+
+package com.yourcompany.testframework.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
+
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+
+    @Bean(name = "testTaskExecutor")
+    public Executor testTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        
+        // Optimized for long-running tests
+        executor.setCorePoolSize(2);           // Keep 2 threads ready
+        executor.setMaxPoolSize(6);            // Max 6 threads for peak load
+        executor.setQueueCapacity(25);         // Reasonable queue size
+        executor.setThreadNamePrefix("TestExec-");
+        
+        // Enhanced policies for long-running tasks
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(60); // Longer shutdown wait
+        executor.setKeepAliveSeconds(120);       // Keep threads alive longer
+        
+        // Java 17 virtual thread support (if using Java 21+)
+        // executor.setTaskDecorator(TaskDecorator)
+        
+        executor.initialize();
+        return executor;
+    }
+}
+-----------------------------------------------
+
+package com.yourcompany.testframework.controller;
+
+import com.yourcompany.testframework.model.TestExecution;
+import com.yourcompany.testframework.model.TestRequest;
+import com.yourcompany.testframework.service.AsyncTestService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+
+@RestController
+@RequestMapping("/api/ci")
+public class CiTestController {
+    
+    private static final Logger logger = LoggerFactory.getLogger(CiTestController.class);
+    
+    private final AsyncTestService asyncTestService;
+    
+    public CiTestController(AsyncTestService asyncTestService) {
+        this.asyncTestService = asyncTestService;
+    }
+    
+    @PostMapping("/run-test")
+    public CompletableFuture<ResponseEntity<TestExecution>> runTest(@RequestBody TestRequest request) {
+        String executionId = "test-%s".formatted(UUID.randomUUID().toString().substring(0, 8));
+        
+        logger.info("Received test execution request: {} for {} test: {}", 
+                   executionId, request.getTestType(), request.getTestClass());
+        
+        return asyncTestService.executeTestAsync(
+            request.getTestClass(), 
+            executionId,
+            request.getAdditionalParams(),
+            request.getTestType()
+        ).thenApply(execution -> {
+            var status = switch (execution.getStatus()) {
+                case "ACCEPTED", "RUNNING" -> HttpStatus.ACCEPTED;
+                case "COMPLETED" -> HttpStatus.OK;
+                case "FAILED", "ERROR", "TIMEOUT" -> HttpStatus.INTERNAL_SERVER_ERROR;
+                default -> HttpStatus.ACCEPTED;
+            };
+            
+            return ResponseEntity.status(status).body(execution);
+        });
+    }
+    
+    @GetMapping("/status/{executionId}")
+    public ResponseEntity<TestExecution> getExecutionStatus(@PathVariable String executionId) {
+        return asyncTestService.getExecutionStatus(executionId)
+            .map(ResponseEntity::ok)
+            .orElse(ResponseEntity.notFound().build());
+    }
+    
+    @GetMapping("/status/{executionId}/wait")
+    public CompletableFuture<ResponseEntity<TestExecution>> waitForCompletion(
+            @PathVariable String executionId,
+            @RequestParam(defaultValue = "3600") long timeoutSeconds) {
+            
+        return CompletableFuture.supplyAsync(() -> {
+            var startTime = Instant.now();
+            var timeout = Duration.ofSeconds(timeoutSeconds);
+            
+            while (Duration.between(startTime, Instant.now()).compareTo(timeout) < 0) {
+                var executionOpt = asyncTestService.getExecutionStatus(executionId);
+                
+                if (executionOpt.isEmpty()) {
+                    return ResponseEntity.notFound().build();
+                }
+                
+                var execution = executionOpt.get();
+                if (execution.isCompleted()) {
+                    return ResponseEntity.ok(execution);
+                }
+                
+                try {
+                    Thread.sleep(2000); // Poll every 2 seconds
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+                }
+            }
+            
+            return ResponseEntity.status(HttpStatus.REQUEST_TIMEOUT).build();
+        });
+    }
+    
+    @GetMapping("/executions/running")
+    public List<TestExecution> getRunningExecutions() {
+        return asyncTestService.getRunningExecutions();
+    }
+    
+    @GetMapping("/executions/stats")
+    public Map<String, Object> getExecutionStats() {
+        var stats = asyncTestService.getExecutionStats();
+        var response = new HashMap<String, Object>();
+        response.put("timestamp", Instant.now());
+        response.put("stats", stats);
+        response.put("total", stats.values().stream().mapToLong(Long::longValue).sum());
+        return response;
+    }
+    
+    @DeleteMapping("/cleanup/{executionId}")
+    public ResponseEntity<Void> cleanupExecution(@PathVariable String executionId) {
+        asyncTestService.cleanupExecution(executionId);
+        return ResponseEntity.ok().build();
+    }
+    
+    @PostMapping("/batch-run")
+    public CompletableFuture<ResponseEntity<BatchTestResponse>> runBatchTests(
+            @RequestBody BatchTestRequest request) {
+            
+        var testFutures = request.getTests().stream()
+            .map(test -> {
+                String executionId = "batch-%s-%s".formatted(
+                    test.getTestClass(), 
+                    UUID.randomUUID().toString().substring(0, 4)
+                );
+                
+                return asyncTestService.executeTestAsync(
+                    test.getTestClass(),
+                    executionId,
+                    test.getAdditionalParams(),
+                    test.getTestType()
+                );
+            })
+            .toList();
+        
+        return CompletableFuture.allOf(testFutures.toArray(CompletableFuture[]::new))
+            .thenApply(v -> {
+                var results = testFutures.stream()
+                    .map(CompletableFuture::join)
+                    .toList();
+                
+                var response = new BatchTestResponse(
+                    results,
+                    Instant.now()
+                );
+                
+                return ResponseEntity.accepted().body(response);
+            });
+    }
+    
+    // Records (Java 16+ feature) for DTOs
+    public record BatchTestRequest(List<TestRequest> tests) {}
+    
+    public record BatchTestResponse(
+        List<TestExecution> results,
+        Instant completedAt
+    ) {}
+    
+    @GetMapping("/health")
+    public ResponseEntity<HealthResponse> health() {
+        String podName = System.getenv().getOrDefault("HOSTNAME", "unknown");
+        var stats = asyncTestService.getExecutionStats();
+        
+        var response = new HealthResponse(
+            "UP",
+            podName,
+            Instant.now(),
+            stats.getOrDefault("RUNNING", 0L),
+            stats.values().stream().mapToLong(Long::longValue).sum()
+        );
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    public record HealthResponse(
+        String status,
+        String podName,
+        Instant timestamp,
+        long runningExecutions,
+        long totalExecutions
+    ) {}
+}
+
+----------------------------------
+
+server:
+  port: 8080
+  servlet:
+    context-path: /test-framework
+
+spring:
+  application:
+    name: test-framework
+  task:
+    execution:
+      thread-name-prefix: test-executor-
+      pool:
+        core-size: 2
+        max-size: 6
+        queue-capacity: 25
+
+# Test Framework Configuration
+test:
+  workspace: /workspace
+  results-dir: target/surefire-reports
+  execution:
+    timeout:
+      hours: 2
+    max-parallel: 3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+----------------------------------------
+
