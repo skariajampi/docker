@@ -1,0 +1,142 @@
+Perfect — that’s exactly the right approach 👍
+You don’t want to zip or push after every test suite; instead, you want to:
+Run multiple Maven commands (each generating results under target/)
+Then at the very end — zip everything once and upload that single artifact to Artifactory
+Let’s set that up properly.
+🧭 Strategy
+We’ll:
+Run your multiple test phases (they’ll all write reports to target/test-results or target/surefire-reports)
+Then have one final goal — say mvn deploy -DzipOnly=true — that only zips and pushes at the end.
+This ensures you don’t re-run tests or overwrite earlier data unnecessarily.
+🧱 Option 1: Use verify phase but control with a flag
+You can keep your Assembly + Build Helper config as before, but wrap them in an activation property so they only run when you ask for it.
+🔧 pom.xml snippet
+<build>
+  <plugins>
+    <!-- Assembly plugin -->
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-assembly-plugin</artifactId>
+      <version>3.7.1</version>
+      <executions>
+        <execution>
+          <id>zip-test-results</id>
+          <phase>verify</phase>
+          <goals>
+            <goal>single</goal>
+          </goals>
+          <configuration>
+            <finalName>${project.artifactId}-test-results</finalName>
+            <appendAssemblyId>false</appendAssemblyId>
+            <descriptors>
+              <descriptor>src/assembly/test-results.xml</descriptor>
+            </descriptors>
+          </configuration>
+          <configuration>
+            <skipAssembly>${!zipOnly}</skipAssembly>
+          </configuration>
+        </execution>
+      </executions>
+    </plugin>
+
+    <!-- Attach ZIP only when zipOnly is true -->
+    <plugin>
+      <groupId>org.codehaus.mojo</groupId>
+      <artifactId>build-helper-maven-plugin</artifactId>
+      <version>3.5.0</version>
+      <executions>
+        <execution>
+          <id>attach-test-results</id>
+          <phase>verify</phase>
+          <goals>
+            <goal>attach-artifact</goal>
+          </goals>
+          <configuration>
+            <artifacts>
+              <artifact>
+                <file>${project.build.directory}/${project.artifactId}-test-results.zip</file>
+                <type>zip</type>
+                <classifier>test-results</classifier>
+              </artifact>
+            </artifacts>
+          </configuration>
+          <configuration>
+            <skipAttach>${!zipOnly}</skipAttach>
+          </configuration>
+        </execution>
+      </executions>
+    </plugin>
+  </plugins>
+</build>
+Now you can control it like this:
+🧩 During normal test runs
+mvn clean verify
+✅ Runs tests
+🚫 Doesn’t create or push ZIP
+🧩 At the end, when ready to publish
+mvn verify deploy -DzipOnly=true
+✅ Zips test reports
+✅ Attaches the ZIP
+✅ Pushes it to Artifactory
+🧰 Option 2: Use a separate Maven profile for the final zip/push
+Cleaner and more explicit — you’ll have a profile like push-test-results.
+<profiles>
+  <profile>
+    <id>push-test-results</id>
+    <build>
+      <plugins>
+        <!-- Assembly -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-assembly-plugin</artifactId>
+          <version>3.7.1</version>
+          <executions>
+            <execution>
+              <id>zip-test-results</id>
+              <phase>verify</phase>
+              <goals>
+                <goal>single</goal>
+              </goals>
+              <configuration>
+                <finalName>${project.artifactId}-test-results</finalName>
+                <appendAssemblyId>false</appendAssemblyId>
+                <descriptors>
+                  <descriptor>src/assembly/test-results.xml</descriptor>
+                </descriptors>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+
+        <!-- Build Helper -->
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>3.5.0</version>
+          <executions>
+            <execution>
+              <id>attach-test-results</id>
+              <phase>verify</phase>
+              <goals>
+                <goal>attach-artifact</goal>
+              </goals>
+              <configuration>
+                <artifacts>
+                  <artifact>
+                    <file>${project.build.directory}/${project.artifactId}-test-results.zip</file>
+                    <type>zip</type>
+                    <classifier>test-results</classifier>
+                  </artifact>
+                </artifacts>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
+</profiles>
+Then at the end, you just run:
+mvn clean verify deploy -Ppush-test-results
+✅ One clean command for the “final step.”
+✅ Keeps your day-to-day test runs fast and uncluttered.
